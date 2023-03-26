@@ -31,8 +31,8 @@
  */
 #define NVTX3_MINOR_VERSION 0
 
+#include <ciso646>
 #include <nvtx3/nvToolsExt.h>
-
 #include <string>
 
 /**

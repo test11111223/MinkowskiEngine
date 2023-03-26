@@ -27,6 +27,7 @@
 #ifndef COORDINATE_HPP
 #define COORDINATE_HPP
 
+#include <ciso646>
 #include "utils.hpp"
 
 namespace minkowski {

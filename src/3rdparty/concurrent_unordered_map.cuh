@@ -36,6 +36,10 @@
 #include <limits>
 #include <type_traits>
 
+#undef CONTINUE
+#undef SUCCESS
+#undef DUPLICATE
+
 namespace {
 template <std::size_t N>
 struct packed {
@@ -263,6 +267,7 @@ class concurrent_unordered_map {
    * @brief Enumeration of the possible results of attempting to insert into
    *a hash bucket
    **/
+   
   enum class insert_result {
     CONTINUE,  ///< Insert did not succeed, continue trying to insert
                ///< (collision)

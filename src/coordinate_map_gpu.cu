@@ -46,7 +46,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void
-remap_inverse_map(map_type __restrict__ map,                       //
+remap_inverse_map(map_type *__restrict__ map,                       //
                   coordinate_type const *__restrict__ coordinates, //
                   index_type *__restrict__ inverse_map,            //
                   size_type const num_threads,                     //
@@ -68,7 +68,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void
-insert_and_map_kernel(map_type __restrict__ map,                       //
+insert_and_map_kernel(map_type *__restrict__ map,                       //
                       coordinate_type const *__restrict__ coordinates, //
                       index_type *__restrict__ valid_map_index,        //
                       index_type *__restrict__ valid_row_index,        //
@@ -81,7 +81,7 @@ insert_and_map_kernel(map_type __restrict__ map,                       //
 
   if (x < num_threads) {
     // Returns pair<iterator, (bool)insert_success>
-    auto const result = map.insert(thrust::make_pair(
+    auto const result = (*map).insert(thrust::make_pair(
         coordinate<coordinate_type>{&coordinates[x * coordinate_size]}, x));
     // auto test = &coordinates[x * coordinate_size];
 
@@ -444,9 +444,11 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::stride(
   index_type const unused_key = std::numeric_limits<index_type>::max();
   LOG_DEBUG("unused_key", unused_key);
 
+  auto m_map_holder = *stride_map.m_map;
+  auto m_map_ptr = &m_map_holder;
   detail::insert_and_map_kernel<coordinate_type, size_type, index_type,
                                 map_type><<<num_blocks, CUDA_NUM_THREADS>>>(
-      *stride_map.m_map,                  //
+      m_map_ptr,                  //
       stride_map.const_coordinate_data(), //
       stride_valid_map_index.data(),      //
       stride_valid_row_index.data(),      //
@@ -501,7 +503,7 @@ template <typename coordinate_type, //
           typename map_type>
 __global__ void kernel_region_insert(
     size_type const num_threads,                                //
-    map_type __restrict__ out_map,                              //
+    map_type *__restrict__ out_map,                              //
     coordinate_type const *const __restrict__ p_in_coordinates, //
     index_type const *const __restrict__ in_valid_row_index,    //
     coordinate_type *__restrict__ p_out_coordinates,            //
@@ -542,6 +544,8 @@ __global__ void kernel_region_insert(
 
   auto sh_kernel = gpu_kernel_region<coordinate_type>(
       kernel, sh_tensor_stride, sh_kernel_size, sh_dilation);
+	  
+  auto out_map_holder = *(out_map);
 
   coordinate<coordinate_type> curr_coordinate(sh_tmp);
   if (x < num_threads) {
@@ -560,7 +564,7 @@ __global__ void kernel_region_insert(
           p_out_coordinates[out_index * coordinate_size + i] =
               curr_coordinate[i];
 
-        auto const result = out_map.insert(thrust::make_pair(
+        auto const result = out_map_holder.insert(thrust::make_pair(
             coordinate<coordinate_type>{
                 &p_out_coordinates[out_index * coordinate_size]},
             out_index));
@@ -586,7 +590,7 @@ __global__ void kernel_region_insert(
             p_out_coordinates[out_index * coordinate_size + i] =
                 curr_coordinate[i];
 
-          auto const result = out_map.insert(thrust::make_pair(
+          auto const result = out_map_holder.insert(thrust::make_pair(
               coordinate<coordinate_type>{
                   &p_out_coordinates[out_index * coordinate_size]},
               out_index));
@@ -646,11 +650,14 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::stride_region(
   uint32_t const shared_memory_size_in_bytes =
       4 * m_coordinate_size * sizeof(index_type) + // stride, kernel, dilation
       CUDA_NUM_THREADS * m_coordinate_size * sizeof(coordinate_type); // tmp
+	  
+  map_type m_map_holder  = *(stride_map).m_map;
+  map_type *m_map_ptr    = &m_map_holder;
 
   detail::kernel_region_insert<coordinate_type, size_type, index_type, map_type>
       <<<GET_BLOCKS(N_in, CUDA_NUM_THREADS), CUDA_NUM_THREADS,
          shared_memory_size_in_bytes>>>(N_in,                         //
-                                        *stride_map.m_map,            //
+                                        m_map_ptr,                    //
                                         const_coordinate_data(),      //
                                         m_valid_row_index.cbegin(),   //
                                         stride_map.coordinate_data(), //
@@ -894,7 +901,7 @@ template <typename coordinate_field_type, //
 __global__ void origin_field_map_kernel(
     size_type const num_threads,                              //
     coordinate_field_type const *__restrict__ d_field_coords, //
-    map_type const __restrict__ origin_map,                   //
+    map_type const *__restrict__ origin_map,                   //
     index_type *__restrict__ p_in_maps,                       //
     index_type *__restrict__ p_out_maps,                      //
     index_type *__restrict__ p_kernels,                       //
@@ -918,7 +925,9 @@ __global__ void origin_field_map_kernel(
   if (x < num_threads) {
     sh_tmp[0] =
         coordinate_int_type(lroundf(d_field_coords[x * coordinate_size]));
-    auto origin_iter = origin_map.find(coordinate<coordinate_int_type>(sh_tmp));
+	auto sh_tmp_ptr = coordinate<coordinate_int_type>(sh_tmp);
+	auto const sh_tmp_holder = sh_tmp_ptr;
+    auto origin_iter = (*origin_map).find(sh_tmp_holder);
     auto out_index = origin_iter->second;
     p_in_maps[x] = x;
     p_out_maps[x] = out_index; // origin_map row index
@@ -961,12 +970,14 @@ CoordinateFieldMapGPU<coordinate_field_type, coordinate_int_type,
   CUDA_CHECK(cudaStreamSynchronize(0));
   LOG_DEBUG("Allocated kernel_map.");
 
+  int_hash_map_type const  const_hash_map_holder = origin_map.const_hash_map();
+  int_hash_map_type const* const_hash_map_ptr = &const_hash_map_holder;
   detail::origin_field_map_kernel<coordinate_field_type, coordinate_int_type,
                                   size_type, index_type, int_hash_map_type>
       <<<num_blocks, thread_dim, shared_memory_size_in_bytes>>>(
           num_threads,                 //
           const_coordinate_data(),     //
-          origin_map.const_hash_map(), //
+          const_hash_map_ptr, //
           kernel_map.in_maps.begin(),  //
           kernel_map.out_maps.begin(), //
           kernel_map.kernels.begin(),  //
@@ -993,7 +1004,7 @@ __global__ void prune_copy_and_insert(
     coordinate_type const *const __restrict__ in_coordinates, //
     bool const *const __restrict__ keep_begin,                //
     index_type const *const __restrict__ inclusive_scan_keep, //
-    map_type __restrict__ out_map,                            //
+    map_type *__restrict__ out_map,                            //
     coordinate_type *__restrict__ out_coordinates,            //
     index_type *__restrict__ out_valid_row_index,             //
     index_type *__restrict__ out_valid_map_offset             //
@@ -1018,7 +1029,7 @@ __global__ void prune_copy_and_insert(
       // insert to the out_map
       auto coord = coordinate<coordinate_type>{curr_out_coord};
       // remap the value in the next kernel call
-      auto result = out_map.insert(thrust::make_pair(coord, 0));
+      auto result = (*(out_map)).insert(thrust::make_pair(coord, 0));
       out_valid_row_index[x] = out_row_index;
       if (result.second)
         out_valid_map_offset[x] = result.first.offset();
@@ -1033,7 +1044,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void remap(size_type const num_threads,                  //
-                      map_type const __restrict__ out_map,          //
+                      map_type const *__restrict__ out_map,         //
                       index_type *__restrict__ out_valid_map_offset //
 ) {
   auto const tx = threadIdx.x;
@@ -1041,7 +1052,7 @@ __global__ void remap(size_type const num_threads,                  //
   auto const x = blockDim.x * bx + tx;
 
   if (x < num_threads) {
-    auto &pair = out_map.data()[out_valid_map_offset[x]];
+    auto &pair = (*(out_map)).data()[out_valid_map_offset[x]];
     pair.second = x;
   }
 }
@@ -1099,12 +1110,14 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::prune(
   out_valid_row_index.resize(N);
 
   index_type const unused_map_offset = std::numeric_limits<index_type>::max();
+  map_type m_map_holder  = *(pruned_map).m_map;
+  map_type *m_map_ptr    = &m_map_holder;
   detail::prune_copy_and_insert<coordinate_type, size_type, index_type,
                                 map_type>
       <<<GET_BLOCKS(N, CUDA_NUM_THREADS), CUDA_NUM_THREADS>>>(
           N, m_coordinate_size, unused_map_offset, m_valid_row_index.cbegin(),
           const_coordinate_data(), keep_begin, d_inclusive_scan,
-          *(pruned_map.m_map), pruned_map.coordinate_data(),
+          m_map_ptr, pruned_map.coordinate_data(),
           out_valid_row_index.data(), out_valid_map_offset.data());
   CUDA_CHECK(cudaStreamSynchronize(0));
 
@@ -1126,9 +1139,11 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::prune(
   pruned_map.m_size = number_of_valid;
 
   // remap the final map values
+  auto m_map_holder2  = *(pruned_map).m_map;
+  auto *m_map_ptr2    = &m_map_holder2;
   detail::remap<coordinate_type, size_type, index_type, map_type>
       <<<GET_BLOCKS(number_of_valid, CUDA_NUM_THREADS), CUDA_NUM_THREADS>>>(
-          number_of_valid, *(pruned_map.m_map), out_valid_map_offset.data());
+          number_of_valid, m_map_ptr2, out_valid_map_offset.data());
   CUDA_CHECK(cudaStreamSynchronize(0));
 
   m_byte_allocator.deallocate((char *)d_inclusive_scan, inclusive_scan_size);
@@ -1144,7 +1159,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void
-copy_coordinates_by_offset(map_type __restrict__ map,                  //
+copy_coordinates_by_offset(map_type *__restrict__ map,                  //
                            coordinate_type *__restrict__ coordinates,  //
                            index_type const *__restrict__ map_offsets, //
                            size_type const num_threads,                //
@@ -1169,7 +1184,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void copy_coordinates_by_valid_row(
-    // map_type __restrict__ map,                          //
+    // map_type *__restrict__ map,                          //
     coordinate_type const *__restrict__ in_coordinates, //
     coordinate_type *__restrict__ out_coordinates,      //
     index_type const *__restrict__ valid_row,           //
@@ -1194,7 +1209,7 @@ template <typename coordinate_type, //
           typename index_type,      //
           typename map_type>
 __global__ void insert_and_map_kernel_with_offset(
-    map_type __restrict__ map,                       //
+    map_type *__restrict__ map,                       //
     coordinate_type const *__restrict__ coordinates, //
     index_type const coordinate_row_offset,          //
     index_type *__restrict__ valid_map_index,        //
@@ -1209,7 +1224,7 @@ __global__ void insert_and_map_kernel_with_offset(
   if (x < num_threads) {
     // m_map.insert(pair);
     // Returns pair<iterator, (bool)insert_success>
-    auto const result = map.insert(thrust::make_pair(
+    auto const result = (*(map)).insert(thrust::make_pair(
         coordinate<coordinate_type>{&coordinates[x * coordinate_size]}, x));
 
     if (result.second) {
@@ -1247,6 +1262,8 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::merge(
   index_type *curr_valid_row_index = merged_map.m_valid_row_index.data();
   index_type const unused_key = std::numeric_limits<index_type>::max();
   index_type row_offset{0};
+  map_type m_map_holder  = *(merged_map).m_map;
+  map_type *m_map_ptr    = &m_map_holder;
   for (self_type const &map : maps) {
     size_type const num_threads = map.size();
     if (num_threads == 0)
@@ -1264,7 +1281,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::merge(
 
     detail::insert_and_map_kernel_with_offset<coordinate_type, size_type,
                                               index_type, map_type>
-        <<<num_blocks, CUDA_NUM_THREADS>>>(*(merged_map.m_map),
+        <<<num_blocks, CUDA_NUM_THREADS>>>(m_map_ptr,
                                            curr_coordinates,      //
                                            row_offset,            //
                                            curr_valid_map_offset, //
@@ -1295,7 +1312,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::merge(
   // remap the final map row index and the map offset
   detail::remap<coordinate_type, size_type, index_type, map_type>
       <<<GET_BLOCKS(number_of_valid, CUDA_NUM_THREADS), CUDA_NUM_THREADS>>>(
-          number_of_valid, *(merged_map.m_map),
+          number_of_valid, m_map_ptr,
           merged_map.m_valid_map_index.data());
 
   merged_map.m_valid_row_index.resize(number_of_valid);
@@ -1448,8 +1465,8 @@ template <typename coordinate_type, //
           typename map_type>
 __global__ void
 direct_in_out_map(size_type const num_threads,                               //
-                  map_type const __restrict__ in_map,                        //
-                  map_type const __restrict__ out_map,                       //
+                  map_type const *__restrict__ in_map,                        //
+                  map_type const *__restrict__ out_map,                       //
                   index_type const *const __restrict__ out_valid_map_offset, //
                   index_type *__restrict__ p_in_maps,                        //
                   index_type *__restrict__ p_out_maps,
@@ -1457,12 +1474,12 @@ direct_in_out_map(size_type const num_threads,                               //
   auto const tx = threadIdx.x;
   auto const bx = blockIdx.x;
   auto const x = blockDim.x * bx + tx;
-
+  auto in_map_holder = *(in_map);
   if (x < num_threads) {
     typename map_type::value_type const &out_value =
-        out_map.data()[out_valid_map_offset[x]];
-    auto const &result = in_map.find(out_value.first);
-    if (result != in_map.end()) {
+        (*(out_map)).data()[out_valid_map_offset[x]];
+    auto const &result = in_map_holder.find(out_value.first);
+    if (result != in_map_holder.end()) {
       p_in_maps[x] = (*result).second;
       p_out_maps[x] = out_value.second;
     } else {
@@ -1553,7 +1570,13 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
   size_type const out_size = out_map.size();
   size_type const kernel_volume = kernel.volume();
   ASSERT(kernel_volume > 0, "Invalid kernel");
-
+  
+  map_type m_in_map_holder = *(m_map);
+  map_type *m_in_map_ptr   = &m_in_map_holder;
+  
+  map_type m_map_holder  = *(out_map).m_map;
+  map_type *m_map_ptr    = &m_map_holder;
+  
   if (kernel_volume == 1) {
     // directly iterate over all output first by finding all in out map.
     auto const N = out_size;
@@ -1568,8 +1591,8 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     index_type unused_key = std::numeric_limits<index_type>::max();
     detail::direct_in_out_map<coordinate_type, size_type, index_type, map_type>
         <<<GET_BLOCKS(N, thread_dim), thread_dim>>>(
-            N, *m_map,                         //
-            *(out_map.m_map),                  //
+            N, m_in_map_ptr,                   //
+            m_map_ptr,                         //
             out_map.m_valid_map_index.cdata(), //
             ins,                               // in map
             outs,                              // out map
@@ -1619,8 +1642,8 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     // Initialize count per thread
     detail::count_kernel<coordinate_type, size_type, index_type, map_type>
         <<<num_blocks, thread_dim, shared_memory_size_in_bytes>>>(
-            *m_map,                             //
-            *out_map.m_map,                     //
+            m_in_map_ptr,                       //
+            m_map_ptr,                          //
             out_map.m_valid_map_index.cbegin(), //
             num_threads,                        //
             kernel,                             //
@@ -1647,8 +1670,8 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     detail::preallocated_kernel_map_iteration<coordinate_type, size_type,
                                               index_type, map_type>
         <<<num_blocks, thread_dim, shared_memory_size_in_bytes>>>(
-            *m_map,                             //
-            *out_map.m_map,                     //
+            m_in_map_ptr,                       //
+            m_map_ptr,                          //
             out_map.m_valid_map_index.cbegin(), //
             num_threads,                        //
             kernel,                             //
@@ -1696,8 +1719,8 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     // Initialize count per thread
     detail::direct_kernel_map<coordinate_type, size_type, index_type, map_type>
         <<<num_blocks, thread_dim, shared_memory_size_in_bytes>>>(
-            *m_map,                             //
-            *out_map.m_map,                     //
+            m_in_map_ptr,                       //
+            m_map_ptr,                          //
             out_map.m_valid_map_index.cbegin(), //
             num_threads,                        //
             kernel,                             //

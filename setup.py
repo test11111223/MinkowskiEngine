@@ -57,6 +57,7 @@ import codecs
 import os
 import re
 import subprocess
+import shutil
 import warnings
 from pathlib import Path
 from sys import argv, platform
@@ -64,12 +65,6 @@ from sys import argv, platform
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
 
-if platform == "win32":
-    raise ImportError("Windows is currently not supported.")
-elif platform == "darwin":
-    # Set the distutils to use clang instead of g++ for valid std
-    if "CC" not in os.environ:
-        os.environ["CC"] = "/usr/local/opt/llvm/bin/clang"
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -88,7 +83,20 @@ def find_version(*file_paths):
 
 
 def run_command(*args):
-    subprocess.check_call(args)
+    try:
+        subprocess.run(args, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e}")
+        exit(1)
+
+def remove_build_dir():
+    try:
+        shutil.rmtree("build")
+    except FileNotFoundError:
+        pass
+
+def uninstall_package(package_name):
+    run_command("pip", "uninstall", package_name, "-y")
 
 
 def _argparse(pattern, argv, is_flag=True, is_list=False):
@@ -119,9 +127,9 @@ def _argparse(pattern, argv, is_flag=True, is_list=False):
                 return arr[0].split("=")[1], argv
 
 
-run_command("rm", "-rf", "build")
-run_command("pip", "uninstall", "MinkowskiEngine", "-y")
 
+remove_build_dir()
+uninstall_package("MinkowskiEngine")
 # For cpu only build
 CPU_ONLY, argv = _argparse("--cpu_only", argv)
 FORCE_CUDA, argv = _argparse("--force_cuda", argv)
@@ -132,9 +140,6 @@ if not torch.cuda.is_available() and not FORCE_CUDA:
 
 CPU_ONLY = CPU_ONLY or not torch.cuda.is_available()
 if FORCE_CUDA:
-    print("--------------------------------")
-    print("| FORCE_CUDA set                |")
-    print("--------------------------------")
     CPU_ONLY = False
 
 # args with return value
@@ -171,7 +176,9 @@ if sys.platform == "win32":
     if vc_version.startswith("14.16."):
         CC_FLAGS += ["/sdl"]
     else:
-        CC_FLAGS += ["/sdl", "/permissive-"]
+        CC_FLAGS += ["/permissive-", "/openmp:llvm","/std:c++17"]
+    NVCC_FLAGS += ["--std=c++17"]
+	
 else:
     CC_FLAGS += ["-fopenmp"]
 
@@ -179,6 +186,7 @@ if "darwin" in platform:
     CC_FLAGS += ["-stdlib=libc++", "-std=c++17"]
 
 NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda"]
+#NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda", "--verbose"]
 FAST_MATH, argv = _argparse("--fast_math", argv)
 if FAST_MATH:
     NVCC_FLAGS.append("--use_fast_math")
@@ -199,7 +207,7 @@ if not (BLAS is False):  # False only when not set, str otherwise
 else:
     # find the default BLAS library
     import numpy.distutils.system_info as sysinfo
-
+    
     # Search blas in this order
     for blas in BLAS_LIST:
         if "libraries" in sysinfo.get_info(blas):
@@ -214,8 +222,6 @@ else:
 \nPlease specify BLAS with: python setup.py install --blas=openblas" \
 \nfor more information, please visit https://github.com/NVIDIA/MinkowskiEngine/wiki/Installation'
         )
-
-print(f"\nUsing BLAS={BLAS}")
 
 # The Ninja cannot compile the files that have the same name with different
 # extensions correctly and uses the nvcc/CC based on the extension. Import a
@@ -282,17 +288,17 @@ if "CC" in os.environ or "CXX" in os.environ:
     else:
         CC = os.environ["CC"]
     print(f"Using {CC} for c++ compilation")
-    if torch.__version__ < "1.7.0":
+    if torch.__version__ < "1.21.0":
         NVCC_FLAGS += [f"-ccbin={CC}"]
 else:
     print("Using the default compiler")
 
 if debug:
     CC_FLAGS += ["-g", "-DDEBUG"]
-    NVCC_FLAGS += ["-g", "-DDEBUG", "-Xcompiler=-fno-gnu-unique"]
+    NVCC_FLAGS += ["-g", "-DDEBUG"]
 else:
-    CC_FLAGS += ["-O3"]
-    NVCC_FLAGS += ["-O3", "-Xcompiler=-fno-gnu-unique"]
+    CC_FLAGS += []
+    NVCC_FLAGS += []
 
 if "MAX_JOBS" not in os.environ and os.cpu_count() > MAX_COMPILATION_THREADS:
     # Clip the num compilation thread to 8
@@ -307,10 +313,19 @@ ARGS = SOURCE_SETS[target][3]
 CC_FLAGS += ARGS
 NVCC_FLAGS += ARGS
 
+print(f'CC_FLAGS: {CC_FLAGS}')
+print(f'NVCC_FLAGS: {NVCC_FLAGS}')
+
+sources_arr=[*[str(SRC_PATH / src_file) for src_file in SRC_FILES], *BIND_FILES]
+#print('Sources: %s' % ','.join(sources_arr))
+
+include_temp_dirs=[str(SRC_PATH), str(SRC_PATH / "3rdparty"), *include_dirs]
+print('Include DIRs: %s \n ---------\n' % ', \n'.join(include_temp_dirs))
+
 ext_modules = [
     Extension(
         name="MinkowskiEngineBackend._C",
-        sources=[*[str(SRC_PATH / src_file) for src_file in SRC_FILES], *BIND_FILES],
+        sources=sources_arr,
         extra_compile_args={"cxx": CC_FLAGS, "nvcc": NVCC_FLAGS},
         libraries=libraries,
     ),
@@ -324,7 +339,7 @@ setup(
     packages=["MinkowskiEngine", "MinkowskiEngine.utils", "MinkowskiEngine.modules"],
     package_dir={"MinkowskiEngine": "./MinkowskiEngine"},
     ext_modules=ext_modules,
-    include_dirs=[str(SRC_PATH), str(SRC_PATH / "3rdparty"), *include_dirs],
+    include_dirs=include_temp_dirs,
     cmdclass={"build_ext": BuildExtension.with_options(use_ninja=True)},
     author="Christopher Choy",
     author_email="chrischoy@ai.stanford.edu",
