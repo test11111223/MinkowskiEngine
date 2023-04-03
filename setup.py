@@ -167,6 +167,7 @@ else:
     print("--------------------------------")
     # system python installation
     libraries.append("cusparse")
+    libraries.append("cublas")
 
 if not (CUDA_HOME is False):  # False when not set, str otherwise
     print(f"Using CUDA_HOME={CUDA_HOME}")
@@ -185,7 +186,8 @@ else:
 if "darwin" in platform:
     CC_FLAGS += ["-stdlib=libc++", "-std=c++17"]
 
-NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda"]
+NVCC_FLAGS += ["--expt-relaxed-constexpr", "--extended-lambda"]
+#NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda"]
 #NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda", "--verbose"]
 FAST_MATH, argv = _argparse("--fast_math", argv)
 if FAST_MATH:

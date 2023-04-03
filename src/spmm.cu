@@ -24,6 +24,7 @@
  * Networks", CVPR'19 (https://arxiv.org/abs/1904.08755) if you use any part
  * of the code.
  */
+#include <ciso646>
 #include "gpu.cuh"
 #include "math_functions.cuh"
 
@@ -81,7 +82,7 @@ torch::Tensor coo_spmm(torch::Tensor const &rows, torch::Tensor const &cols,
                        torch::Tensor const &vals, int64_t const dim_i,
                        int64_t const dim_j, torch::Tensor const &mat2,
                        int64_t const spmm_algorithm_id, bool const is_sorted) {
-#if defined __HIP_PLATFORM_HCC__
+#ifdef __HIP_PLATFORM_HCC__
   TORCH_CHECK(false, "spmm sparse-dense is not supported on HIP");
 #elif defined(_WIN32) || defined(_WIN64)
   TORCH_CHECK(false, "spmm sparse-dense CUDA is not supported on Windows");
@@ -95,8 +96,7 @@ torch::Tensor coo_spmm(torch::Tensor const &rows, torch::Tensor const &cols,
   cusparseSpMMAlg_t mm_alg;
 #if defined(CUDART_VERSION) && (CUDART_VERSION < 10010)
   TORCH_CHECK(false, "spmm sparse-dense requires CUDA 10.1 or greater");
-#elif defined(CUDART_VERSION) && (CUDART_VERSION >= 10010) &&                  \
-    (CUDART_VERSION < 11000)
+#elif defined(CUDART_VERSION) && (CUDART_VERSION >= 10010) && (CUDART_VERSION < 11000)
   switch (spmm_algorithm_id) {
   case 1:
     mm_alg = CUSPARSE_COOMM_ALG1;
@@ -200,7 +200,8 @@ torch::Tensor coo_spmm(torch::Tensor const &rows, torch::Tensor const &cols,
 
   // Iterate through each set of 2D matrices within the 3D
   // tensor inputs, performing a matrix multiply with each
-  AT_DISPATCH_FLOATING_TYPES(vals.scalar_type(), "coo_spmm", [&] {
+  #ifdef DEBUG
+  AT_DISPATCH_FLOATING_TYPES(vals.scalar_type(), "coo_spmm", ([&] {
     scalar_t alpha_val = alpha.to<scalar_t>();
     scalar_t beta_val = beta.to<scalar_t>();
 
@@ -301,10 +302,8 @@ torch::Tensor coo_spmm(torch::Tensor const &rows, torch::Tensor const &cols,
                                 (void *)&beta_val, result_descr,  //
                                 cuda_data_type, mm_alg, workspace_buffer));
 
-#ifdef DEBUG
     LOG_DEBUG("SPMM", cudaDeviceSynchronize());
     CUDA_CHECK_DEBUG(cudaDeviceSynchronize());
-#endif
 
     // Cleanup
     CUSPARSE_CHECK(cusparseDestroySpMat(sparse_descr));
@@ -321,7 +320,126 @@ torch::Tensor coo_spmm(torch::Tensor const &rows, torch::Tensor const &cols,
       cudaFree(workspace_buffer);
     }
     LOG_DEBUG("Dealloc finished", cudaDeviceSynchronize());
-  });
+  }));
+  #else
+  AT_DISPATCH_FLOATING_TYPES(vals.scalar_type(), "coo_spmm", ([&] {
+    scalar_t alpha_val = alpha.to<scalar_t>();
+    scalar_t beta_val = beta.to<scalar_t>();
+
+    scalar_t *values_ptr = reinterpret_cast<scalar_t *>(vals.data_ptr());
+    scalar_t *mat2_ptr = reinterpret_cast<scalar_t *>(mat2_contig.data_ptr());
+    scalar_t *result_ptr = reinterpret_cast<scalar_t *>(result.data_ptr());
+
+    th_int_type *sorted_row_ptr, *sorted_col_ptr;
+    scalar_t *sorted_val_ptr;
+    //////////////////////////////////////
+    // Sort the sparse matrix COO
+    LOG_DEBUG("Is sorted", is_sorted);
+    if (!is_sorted) {
+      sorted_row_ptr =
+          (th_int_type *)c10::cuda::CUDACachingAllocator::raw_alloc(
+              2 * nnz * sizeof(th_int_type));
+      sorted_col_ptr = sorted_row_ptr + nnz;
+      sorted_val_ptr = (scalar_t *)c10::cuda::CUDACachingAllocator::raw_alloc(
+          nnz * sizeof(scalar_t));
+      LOG_DEBUG("Allocated sorted row col val", nnz);
+
+      // Copy the indices
+      CUDA_CHECK(cudaMemcpy(sorted_row_ptr, row_indices_ptr,
+                            nnz * sizeof(th_int_type),
+                            cudaMemcpyDeviceToDevice));
+      CUDA_CHECK(cudaMemcpy(sorted_col_ptr, col_indices_ptr,
+                            nnz * sizeof(th_int_type),
+                            cudaMemcpyDeviceToDevice));
+      CUDA_CHECK(cudaMemcpy(sorted_val_ptr, values_ptr, nnz * sizeof(scalar_t),
+                            cudaMemcpyDeviceToDevice));
+
+      THRUST_CHECK(thrust::sort_by_key(thrust::device,            //
+                                       sorted_row_ptr,            // key begin
+                                       sorted_row_ptr + nnz,      // key end
+                                       thrust::make_zip_iterator( // value begin
+                                           thrust::make_tuple(    //
+                                               sorted_col_ptr,    //
+                                               sorted_val_ptr     //
+                                               )                  //
+                                           )));
+      LOG_DEBUG("sorted row", cudaDeviceSynchronize());
+    } else {
+      sorted_row_ptr = row_indices_ptr;
+      sorted_col_ptr = col_indices_ptr;
+      sorted_val_ptr = values_ptr;
+      LOG_DEBUG("Initialized ptrs from inputs");
+    }
+    //////////////////////////////////////
+
+    size_t workspace_buffer_size = 0;
+    void *workspace_buffer = nullptr;
+
+    cusparseSpMatDescr_t sparse_descr;
+    CUSPARSE_CHECK(cusparseCreateCoo(
+        &sparse_descr,     //
+        dim_i, dim_j, nnz, //
+        reinterpret_cast<void *>(sorted_row_ptr),
+        reinterpret_cast<void *>(sorted_col_ptr),
+        reinterpret_cast<void *>(sorted_val_ptr), //
+        std::is_same<th_int_type, int32_t>::value ? CUSPARSE_INDEX_32I
+                                                  : CUSPARSE_INDEX_64I,
+        CUSPARSE_INDEX_BASE_ZERO, cuda_data_type));
+
+    cusparseDnMatDescr_t dense_descr;
+    CUSPARSE_CHECK(cusparseCreateDnMat(&dense_descr,                       //
+                                       dim_k, dim_j, dim_k,                //
+                                       reinterpret_cast<void *>(mat2_ptr), //
+                                       cuda_data_type, CUSPARSE_ORDER_COL));
+
+    cusparseDnMatDescr_t result_descr;
+    CUSPARSE_CHECK(cusparseCreateDnMat(&result_descr,                        //
+                                       dim_i, dim_k, dim_i,                  //
+                                       reinterpret_cast<void *>(result_ptr), //
+                                       cuda_data_type, CUSPARSE_ORDER_COL));
+    LOG_DEBUG("initialized matrices", cudaGetLastError());
+
+    size_t required_workspace_buffer_size = 0;
+    CUSPARSE_CHECK(cusparseSpMM_bufferSize(
+        cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_TRANSPOSE, (void *)&alpha_val, sparse_descr,
+        dense_descr, (void *)&beta_val, result_descr, cuda_data_type, mm_alg,
+        &required_workspace_buffer_size));
+    LOG_DEBUG("Buffer size:", required_workspace_buffer_size);
+
+    if (required_workspace_buffer_size > workspace_buffer_size) {
+      if (workspace_buffer != nullptr) {
+        cudaFree(workspace_buffer);
+      }
+      workspace_buffer_size = required_workspace_buffer_size;
+      LOG_DEBUG("cudaMallocManaged");
+      cudaMallocManaged(&workspace_buffer, workspace_buffer_size);
+    }
+    CUSPARSE_CHECK(cusparseSpMM(cusparse_handle,                  //
+                                CUSPARSE_OPERATION_NON_TRANSPOSE, //
+                                CUSPARSE_OPERATION_TRANSPOSE,     //
+                                (void *)&alpha_val,               //
+                                sparse_descr, dense_descr,        //
+                                (void *)&beta_val, result_descr,  //
+                                cuda_data_type, mm_alg, workspace_buffer));
+
+    // Cleanup
+    CUSPARSE_CHECK(cusparseDestroySpMat(sparse_descr));
+    CUSPARSE_CHECK(cusparseDestroyDnMat(dense_descr));
+    CUSPARSE_CHECK(cusparseDestroyDnMat(result_descr));
+
+    if (!is_sorted) {
+      LOG_DEBUG("Dealloc");
+      c10::cuda::CUDACachingAllocator::raw_delete((void *)sorted_row_ptr);
+      c10::cuda::CUDACachingAllocator::raw_delete((void *)sorted_val_ptr);
+    }
+
+    if (workspace_buffer != nullptr) {
+      cudaFree(workspace_buffer);
+    }
+    LOG_DEBUG("Dealloc finished", cudaDeviceSynchronize());
+  }));
+  #endif
 
   // Need to transpose the result matrices since cusparse stores
   // them in column-major order in memory
