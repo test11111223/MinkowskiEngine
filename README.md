@@ -12,7 +12,7 @@ The Minkowski Engine is an auto-differentiation library for sparse tensors. It s
 ## Minkowski Engine For Windows 10 + VS2022 + CUDA 11.7 + Manual Compiled OpenBLAS 0.3.23 + Python 3.10
 
 1.Install VS 2022, CUDA 11.7, Conda  
-2.Create conda environment, use python 3.10, pytorch 1.13.1+cu117  
+2.Create conda environment, use python 3.10, pytorch 2.0.0+cu117  
 3.Compile and install Openblas on Windows (follow https://github.com/xianyi/OpenBLAS/wiki/How-to-use-OpenBLAS-in-Microsoft-Visual-Studio)  
 4.Copy the file openblas.lib to C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\libs\  
 5.Modify the Macros.h under the Folder C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\Lib\site-packages\torch\include\c10\macros\  
