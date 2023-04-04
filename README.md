@@ -9,12 +9,13 @@
 The Minkowski Engine is an auto-differentiation library for sparse tensors. It supports all standard neural network layers such as convolution, pooling, unpooling, and broadcasting operations for sparse tensors. For more information, please visit [the documentation page](http://nvidia.github.io/MinkowskiEngine/overview.html).
 
 
-## Minkowski Engine For Windows 10 + VS2022 + CUDA 11.7 + Manual Compiled OpenBLAS 0.3.23
+## Minkowski Engine For Windows 10 + VS2022 + CUDA 11.7 + Manual Compiled OpenBLAS 0.3.23 + Python 3.10
 
-1.Install VS 2022, CUDA 11.7  
-1.Compile and install Openblas on Windows (follow https://github.com/xianyi/OpenBLAS/wiki/How-to-use-OpenBLAS-in-Microsoft-Visual-Studio)  
-2.Copy the file openblas.lib to C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\libs\  
-3.Modify the Macros.h under the Folder C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\Lib\site-packages\torch\include\c10\macros\  
+1.Install VS 2022, CUDA 11.7, Conda  
+2.Create conda environment, use python 3.10, pytorch 1.13.1+cu117  
+3.Compile and install Openblas on Windows (follow https://github.com/xianyi/OpenBLAS/wiki/How-to-use-OpenBLAS-in-Microsoft-Visual-Studio)  
+4.Copy the file openblas.lib to C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\libs\  
+5.Modify the Macros.h under the Folder C:\Users\\\<User Name>\anaconda3\envs\\\<Your Env Name>\Lib\site-packages\torch\include\c10\macros\  
     Replace the following:  
 ```
 #if __has_attribute(used)
@@ -33,8 +34,8 @@ With
 #define C10_USED
 #endif
 ```
-4.Reopen the conda console and go to the MinkowskiEngine Project Folder  
-5.Run the following command  
+6.Reopen the conda console and go to the MinkowskiEngine Project Folder  
+7.Run the following command  
 ```
 python setup.py install --blas=openblas --blas_include_dirs="C:\opt\include\openblas" --blas_library_dirs="C:\opt\lib" --cuda_home="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.7"  
 ```
